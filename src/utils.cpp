@@ -5,8 +5,10 @@
 #include <sstream>
 #include <iomanip>
 #include <ctime>
+#include <memory>
 #include <regex>
 #include <boost/json.hpp>
+#include <curl/curl.h>
 
 std::string base64Encode(const uint8_t* data, size_t len)
 {
@@ -223,21 +225,50 @@ bool isValidUrl(const std::string& url)
 		return false;
 	}
 
-	// Check for valid URL scheme (http:// or https://)
-	static const std::regex urlPattern(R"(
-		^(https?):
-		//
-		(
-		  ([a-zA-Z0-9]([a-zA-Z0-9\-._~]*[a-zA-Z0-9])?)  
-		  |(\[[0-9a-fA-F:]+\])                          
-		  |((([1-9]?\d|1\d\d|2[0-4]\d|25[0-5])\.){3}    
-			 ([1-9]?\d|1\d\d|2[0-4]\d|25[0-5]))
-		)
-		(:(\d{1,5}))?                                    
-		(/[^\s]*)?                                       
-		$)", std::regex::extended | std::regex::icase);
+	// Whitespace and control characters are never part of a valid URL. Recent
+	// libcurl rejects them on its own, older releases let spaces through.
+	for (unsigned char c : url)
+	{
+		if (c <= 0x20 || c == 0x7F)
+		{
+			return false;
+		}
+	}
 
-	return std::regex_match(url, urlPattern);
+	// Callers append "/subjects/..." to this URL, so a query or a fragment would
+	// swallow that path (e.g. "file:///etc/passwd#" + "/subjects/x/versions").
+	if (url.find_first_of("?#") != std::string::npos)
+	{
+		return false;
+	}
+
+	std::unique_ptr<CURLU, decltype(&curl_url_cleanup)> handle(curl_url(), &curl_url_cleanup);
+	if (!handle)
+	{
+		return false;
+	}
+
+	// No CURLU_DEFAULT_SCHEME / CURLU_GUESS_SCHEME: the scheme must be explicit.
+	if (curl_url_set(handle.get(), CURLUPART_URL, url.c_str(), 0) != CURLUE_OK)
+	{
+		return false;
+	}
+
+	char* scheme = nullptr;
+	char* host = nullptr;
+	const bool parsed =
+		curl_url_get(handle.get(), CURLUPART_SCHEME, &scheme, 0) == CURLUE_OK &&
+		curl_url_get(handle.get(), CURLUPART_HOST, &host, 0) == CURLUE_OK;
+
+	// user:password@ is allowed on purpose: it is the only way to pass Basic
+	// credentials to Schema Registry, there is no separate setting for them.
+	const bool valid = parsed && scheme && host && host[0] != '\0' &&
+		(curl_strequal(scheme, "http") || curl_strequal(scheme, "https"));
+
+	curl_free(scheme);
+	curl_free(host);
+
+	return valid;
 }
 
 bool isValidJson(const std::string& json, std::string& errorMsg)

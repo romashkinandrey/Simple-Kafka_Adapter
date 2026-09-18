@@ -44,7 +44,10 @@ intmax_t getTimeStamp();
 
 //================================== Input Validation ==========================================
 
-// URL validation for Schema Registry
+// URL validation for Schema Registry: an absolute http:// or https:// URL with
+// a host and without a query, a fragment, whitespace or control characters.
+// Parsed by libcurl itself (curl_url, libcurl 7.62.0+), so the check agrees
+// with the URL libcurl actually requests.
 bool isValidUrl(const std::string& url);
 
 // JSON validation
